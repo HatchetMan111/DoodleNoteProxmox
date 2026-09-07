@@ -3,8 +3,12 @@
 # DoodleNote (Web Workspace / Sync Server) — Proxmox LXC Einzeiler-Installer
 # Stil: angelehnt an community-scripts.github.io/ProxmoxVE (pct create + Setup im CT)
 #
-# Einzeiler (auf dem Proxmox-Host als root):
+# Einzeiler (auf dem Proxmox-Host als root, curl mit Timeouts empfohlen):
+#   bash -c "$(curl -fsSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/HatchetMan111/DoodleNoteProxmox/main/install/doodle-note.sh)"
+# Alternative mit wget:
 #   bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/DoodleNoteProxmox/main/install/doodle-note.sh)"
+# Kommt gar keine Ausgabe, hängt der Download — dann zweistufig vorgehen:
+#   curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/dn.sh <URL> && bash /tmp/dn.sh
 # Debug bei Fehlern:
 #   DEBUG=1 bash -x doodle-note.sh
 #
@@ -16,6 +20,12 @@
 # Self-Hosting-Doku: SELF-HOSTING.md / apps/web/README.md im Upstream-Repo
 
 set -euo pipefail
+
+# Sofort-Banner (ungepuffert, VOR allen Prüfungen): Bleibt die Ausgabe HIER
+# stehen, hängt der Download (wget/curl) und nicht dieses Script. Dann bitte
+# den Download separat testen:
+#   curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/dn.sh <URL> && bash /tmp/dn.sh
+echo "[doodle-note] Installer startet ... (Host: $(hostname 2>/dev/null || echo unbekannt), $(date '+%F %T' 2>/dev/null || echo nodate))"
 
 # ============================================================================
 # Variablen (oben, Community-Scripts-konform anpassbar)
@@ -95,8 +105,9 @@ usage() {
   cat <<EOF
 ${APP_NAME} Proxmox-Installer
 
-Auf dem Proxmox-Host als root ausführen:
-  bash -c "\$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/DoodleNoteProxmox/main/install/doodle-note.sh)"
+Auf dem Proxmox-Host als root ausführen (curl mit Timeouts empfohlen):
+  bash -c "\$(curl -fsSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/HatchetMan111/DoodleNoteProxmox/main/install/doodle-note.sh)"
+  # Alternative: bash -c "\$(wget -qLO - https://.../install/doodle-note.sh)"
 
 Optionen:
   --ctid ID          Container-ID (Standard: nächste freie ab 100)
@@ -142,18 +153,26 @@ command -v wget >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 || die "weder
 # Eine VMID ist belegt, sobald LXC- ODER QEMU-Config/Status existiert.
 # (Nur `pct status` zu prüfen reicht nicht: QEMU-VMs teilen sich den
 #  ID-Raum, `pct status <qemu-id>` meldet aber "kein Container".)
+# Alle Sonden laufen mit `timeout`, damit ein hängender pmxcfs/pct-Aufruf
+# nicht das ganze Script blockiert. Nach 150 IDs ohne Treffer: Abbruch mit
+# klarer Meldung statt Endlosschleife.
 vmid_in_use() {
   local id="$1"
-  if pct status "$id" >/dev/null 2>&1; then return 0; fi
-  if command -v qm >/dev/null 2>&1 && qm status "$id" >/dev/null 2>&1; then return 0; fi
-  if [[ -e "/etc/pve/lxc/${id}.conf" || -e "/etc/pve/qemu-server/${id}.conf" ]]; then return 0; fi
+  if timeout 15 pct status "$id" >/dev/null 2>&1; then return 0; fi
+  if command -v qm >/dev/null 2>&1 && timeout 15 qm status "$id" >/dev/null 2>&1; then return 0; fi
+  if timeout 10 test -e "/etc/pve/lxc/${id}.conf"; then return 0; fi
+  if timeout 10 test -e "/etc/pve/qemu-server/${id}.conf"; then return 0; fi
   return 1
 }
 
 next_free_ctid() {
-  local id=100
+  local id=100 guard=0
   while vmid_in_use "$id"; do
     id=$((id + 1))
+    guard=$((guard + 1))
+    if [[ "$guard" -gt 150 ]]; then
+      die "Keine freie VMID im Bereich 100-250 gefunden. Bitte per --ctid eine freie ID wählen (pct list / qm list prüfen)."
+    fi
   done
   echo "$id"
 }
@@ -202,8 +221,8 @@ fi
 # Template sicherstellen
 # ============================================================================
 ensure_template() {
-  log_info "Aktualisiere Template-Liste (pveam update) ..."
-  pveam update 2>&1 | tail -n 5
+  log_info "Aktualisiere Template-Liste (pveam update, max. 180s) ..."
+  timeout 180 pveam update 2>&1 | tail -n 5 || die "pveam update hängt/fehlgeschlagen (Timeout 180s). Netzwerk/DNS des Hosts prüfen."
   if pveam list "${TEMPLATE_STORAGE}" 2>/dev/null | grep -q "${TEMPLATE_DEFAULT}"; then
     log_ok "Template ${TEMPLATE_DEFAULT} bereits vorhanden."
     return 0

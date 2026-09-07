@@ -18,8 +18,28 @@ Upstream-App: <https://github.com/Onyx-Dev-Labs/doodle-note>
 ## Installation (Einzeiler, auf dem Proxmox-Host als root)
 
 ```bash
+bash -c "$(curl -fsSL --connect-timeout 10 --max-time 60 https://raw.githubusercontent.com/HatchetMan111/DoodleNoteProxmox/main/install/doodle-note.sh)"
+```
+
+Alternative mit `wget`:
+
+```bash
 bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/DoodleNoteProxmox/main/install/doodle-note.sh)"
 ```
+
+> **Kommt gar keine Ausgabe** (nicht mal `[doodle-note] Installer startet ...`),
+> hängt der **Download**, nicht das Script — `bash -c "$(…)"` wartet erst den
+> kompletten Download ab. Dann zweistufig vorgehen, um es zu sehen:
+>
+> ```bash
+> curl -fsSL --connect-timeout 10 --max-time 60 -o /tmp/dn.sh \
+>   https://raw.githubusercontent.com/HatchetMan111/DoodleNoteProxmox/main/install/doodle-note.sh \
+>   && bash /tmp/dn.sh
+> ```
+>
+> Steht `[doodle-note] Installer startet ...` da und es geht nicht weiter,
+> bitte diese Zeile + die letzte Logzeile schicken — jede Phase loggt vorab,
+> `pct`/`qm`/`pveam`-Aufrufe sind per `timeout` abgesichert.
 
 Mit Optionen (CT-ID, Hostname, Storage, Bridge, Netz):
 
