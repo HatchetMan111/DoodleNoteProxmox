@@ -1,0 +1,19 @@
+[Unit]
+Description=DoodleNote Web Workspace (Next.js Sync Server)
+Documentation=https://github.com/Onyx-Dev-Labs/doodle-note/blob/main/SELF-HOSTING.md
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/doodle-note
+EnvironmentFile=/etc/doodle-note/doodle-note.env
+ExecStart=/usr/bin/pnpm --filter web start
+Restart=always
+RestartSec=5
+TimeoutStopSec=30
+NoNewPrivileges=false
+
+[Install]
+WantedBy=multi-user.target
