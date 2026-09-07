@@ -21,7 +21,7 @@ set -euo pipefail
 # Variablen (oben, Community-Scripts-konform anpassbar)
 # ============================================================================
 APP_NAME="doodle-note"
-HOSTNAME_DEFAULT="doodle-note"
+HOSTNAME_DEFAULT="doodleNote"
 UPSTREAM_REPO="https://github.com/Onyx-Dev-Labs/doodle-note.git"
 UPSTREAM_BRANCH="main"
 
@@ -49,7 +49,7 @@ DB_USER="doodlenote"
 # Hinweis: die systemd-Unit ist unten im Inner-Setup eingebettet
 # (identisch zu assets/doodle-note.service); kein Extra-Download nötig.
 
-# CLI-Overrides: --ctid 101 --hostname doodle-note --storage local-lvm --bridge vmbr0 --net dhcp
+# CLI-Overrides: --ctid 101 --hostname doodleNote --storage local-lvm --bridge vmbr0 --net dhcp
 CTID_ARG=""
 HOSTNAME_ARG=""
 STORAGE_ARG=""
@@ -139,16 +139,29 @@ command -v pveam >/dev/null 2>&1 || die "pveam nicht gefunden — kein Proxmox-H
 command -v openssl >/dev/null 2>&1 || die "openssl fehlt auf dem Host."
 command -v wget >/dev/null 2>&1 || command -v curl >/dev/null 2>&1 || die "weder wget noch curl auf dem Host gefunden."
 
+# Eine VMID ist belegt, sobald LXC- ODER QEMU-Config/Status existiert.
+# (Nur `pct status` zu prüfen reicht nicht: QEMU-VMs teilen sich den
+#  ID-Raum, `pct status <qemu-id>` meldet aber "kein Container".)
+vmid_in_use() {
+  local id="$1"
+  if pct status "$id" >/dev/null 2>&1; then return 0; fi
+  if command -v qm >/dev/null 2>&1 && qm status "$id" >/dev/null 2>&1; then return 0; fi
+  if [[ -e "/etc/pve/lxc/${id}.conf" || -e "/etc/pve/qemu-server/${id}.conf" ]]; then return 0; fi
+  return 1
+}
+
 next_free_ctid() {
   local id=100
-  while pct status "$id" >/dev/null 2>&1; do
+  while vmid_in_use "$id"; do
     id=$((id + 1))
   done
   echo "$id"
 }
 
+CTID_AUTO="0"
 if [[ -z "$CTID" ]]; then
   CTID="$(next_free_ctid)"
+  CTID_AUTO="1"
   log_info "Keine CTID angegeben — nutze nächste freie ID: ${CTID}"
 fi
 [[ "$CTID" =~ ^[0-9]+$ ]] || die "Ungültige CTID: ${CTID}"
@@ -156,12 +169,30 @@ fi
 container_exists() { pct status "$1" >/dev/null 2>&1; }
 
 # Idempotenz: Existiert der CT bereits mit fertiger App, wird Update statt Neuinstallation gefahren.
+# Explizit per --ctid gewählte, aber belegte IDs werden NICHT still umgebogen (sonst
+# landet ein Update versehentlich in einem fremden Container). Nur die automatische
+# Wahl weicht auf die nächste freie ID aus.
 if container_exists "$CTID"; then
   if pct exec "$CTID" -- test -d "${APP_DIR}/.git" 2>/dev/null; then
     log_warn "CT ${CTID} existiert bereits mit ${APP_DIR} — fahre Update-Pfad (git pull + rebuild)."
     UPDATE_MODE="1"
   else
-    die "CTID ${CTID} ist bereits vergeben (pct status ok), enthält aber keine ${APP_NAME}-Installation. Andere ID via --ctid wählen oder CT entfernen: pct stop ${CTID} && pct destroy ${CTID}"
+    if [[ "$CTID_AUTO" == "1" ]]; then
+      CTID="$(next_free_ctid)"
+      log_warn "Auto-ID war belegt — weiche aus auf nächste freie ID: ${CTID}"
+      UPDATE_MODE="0"
+    else
+      die "CTID ${CTID} ist bereits vergeben, enthält aber keine ${APP_NAME}-Installation. Freie ID-Vorschlag: $(next_free_ctid) — oder CT entfernen: pct stop ${CTID} && pct destroy ${CTID}"
+    fi
+  fi
+elif vmid_in_use "$CTID"; then
+  # Belegt durch QEMU-VM (kein Container) — pct create würde mit "already exists" scheitern.
+  if [[ "$CTID_AUTO" == "1" ]]; then
+    CTID="$(next_free_ctid)"
+    log_warn "Auto-ID war durch eine VM belegt — weiche aus auf nächste freie ID: ${CTID}"
+    UPDATE_MODE="0"
+  else
+    die "VMID ${CTID} ist bereits durch eine VM/einen Container belegt (kein ${APP_NAME}-LXC). Freie ID-Vorschlag: $(next_free_ctid)"
   fi
 else
   UPDATE_MODE="0"
@@ -202,19 +233,36 @@ create_container() {
     net0="name=eth0,bridge=${BRIDGE},ip=${NET_CFG}"
   fi
   log_info "Erstelle LXC ${CTID} (${HOSTNAME}, ${CPU_DEFAULT}vCPU/${RAM_DEFAULT}MB/${DISK_DEFAULT}G, ${STORAGE}) ..."
-  pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE_DEFAULT}" \
-    --hostname "$HOSTNAME" \
-    --cores "$CPU_DEFAULT" \
-    --memory "$RAM_DEFAULT" \
-    --rootfs "${STORAGE}:${DISK_DEFAULT}" \
-    --net0 "$net0" \
-    --unprivileged "$UNPRIVILEGED_DEFAULT" \
-    --features "nesting=${NESTING_DEFAULT}" \
-    --onboot "$ONBOOT_DEFAULT" \
-    --timezone "$TIMEZONE_DEFAULT" \
-    --tags "$APP_NAME" \
-    --start 0
-  log_ok "Container ${CTID} erstellt (onboot=${ONBOOT_DEFAULT})."
+  # Retry: Falls die ID zwischen Prüfung und Create doch belegt wurde
+  # (Race oder pct/qm-Diskrepanz), auf nächste freie ID ausweichen.
+  local attempt=0 create_out=""
+  while [[ $attempt -lt 20 ]]; do
+    if create_out="$(pct create "$CTID" "${TEMPLATE_STORAGE}:vztmpl/${TEMPLATE_DEFAULT}" \
+      --hostname "$HOSTNAME" \
+      --cores "$CPU_DEFAULT" \
+      --memory "$RAM_DEFAULT" \
+      --rootfs "${STORAGE}:${DISK_DEFAULT}" \
+      --net0 "$net0" \
+      --unprivileged "$UNPRIVILEGED_DEFAULT" \
+      --features "nesting=${NESTING_DEFAULT}" \
+      --onboot "$ONBOOT_DEFAULT" \
+      --timezone "$TIMEZONE_DEFAULT" \
+      --tags "$APP_NAME" \
+      --start 0 2>&1)"; then
+      log_ok "Container ${CTID} erstellt (onboot=${ONBOOT_DEFAULT})."
+      return 0
+    fi
+    if echo "$create_out" | grep -qi "already exists"; then
+      log_warn "VMID ${CTID} doch belegt (${create_out}) — suche nächste freie ..."
+      CTID="$(next_free_ctid)"
+      attempt=$((attempt + 1))
+      continue
+    fi
+    echo "$create_out" >&2
+    return 1
+  done
+  log_err "Konnte nach 20 Versuchen keine freie VMID finden."
+  return 1
 }
 
 start_container() {

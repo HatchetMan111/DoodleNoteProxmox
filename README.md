@@ -24,9 +24,15 @@ bash -c "$(wget -qLO - https://raw.githubusercontent.com/HatchetMan111/DoodleNot
 Mit Optionen (CT-ID, Hostname, Storage, Bridge, Netz):
 
 ```bash
-bash doodle-note.sh --ctid 101 --hostname doodle-note --storage local-lvm --bridge vmbr0 --net dhcp
+bash doodle-note.sh --ctid 101 --hostname doodleNote --storage local-lvm --bridge vmbr0 --net dhcp
 # statisch z. B.: --net 10.0.0.50/24,gw=10.0.0.1
 ```
+
+Ohne `--ctid` nimmt das Script die nächste freie ID ab 100 und weicht
+automatisch aus, falls die ID doch belegt ist (der ID-Raum wird mit
+QEMU-VMs geteilt — `qm status` wird mitgeprüft). Standard-Hostname:
+`doodleNote`. Explizit per `--ctid` gewählte, belegte IDs werden nicht
+still umgebogen — das Script schlägt dann eine freie ID vor.
 
 Bei Fehlern mit vollem Trace (komplette Kette, nicht nur letzte Zeile):
 
@@ -51,7 +57,7 @@ DEBUG=1 bash -x doodle-note.sh
 ========================================
  doodle-note Installation erfolgreich
 ========================================
- Container : CT 101 (doodle-note)
+ Container : CT 101 (doodleNote)
  Web UI    : http://192.168.1.101:4040
  Lokaltest : pct exec 101 -- curl -I http://localhost:4040/
  Service   : pct exec 101 -- systemctl status doodle-note
