@@ -144,6 +144,15 @@ Env/Build/Doku: `SELF-HOSTING.md`, `apps/web/README.md`, Port `4040`,
 - Service: `pct exec <CTID> -- systemctl status doodle-note`
 - HTTP: `pct exec <CTID> -- curl -v http://localhost:4040/`
 
+## Lizenz & Herkunft
+
+- **Dieser Installer (+ systemd-Unit):** MIT — siehe `LICENSE` (Copyright 2026 HatchetMan111).
+- **App-Code:** wird zur Installationszeit per `git clone` aus dem Upstream
+  [Onyx-Dev-Labs/doodle-note](https://github.com/Onyx-Dev-Labs/doodle-note) (MIT,
+  © Onyx Dev Labs) geholt und **nicht** in diesem Repo weiterverteilt.
+  Es wurden keine Upstream-Dateien hierher kopiert.
+- **Inoffiziell:** Dieses Projekt ist *nicht* mit Onyx Dev Labs affiliiert.
+
 ### Bekannte Meldungen (harmlos, kein Abbruch)
 
 - `could not change directory to "/root": Permission denied` (bei `su postgres`):
