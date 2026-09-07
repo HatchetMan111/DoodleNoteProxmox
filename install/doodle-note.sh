@@ -356,6 +356,7 @@ ct_err() {
 trap ct_err ERR
 
 export DEBIAN_FRONTEND=noninteractive
+cd /tmp  # su postgres erbt sonst /root als cwd -> "could not change directory" (harmlos, aber laut)
 
 log "OS-Pakete installieren ..."
 apt-get update
@@ -395,8 +396,10 @@ if ! su postgres -c "psql -lqt" | cut -d'|' -f1 | grep -qw "\${DB_NAME}"; then
   su postgres -c "createdb -O \${DB_USER} \${DB_NAME}"
 fi
 su postgres -c "psql -c \\"GRANT ALL PRIVILEGES ON DATABASE \${DB_NAME} TO \${DB_USER};\\""
+mkdir -p "\${ENV_DIR:-/etc/doodle-note}"
+chmod 700 "\${ENV_DIR:-/etc/doodle-note}"
 echo "\${STORED_PASS}" > "\${ENV_DIR:-/etc/doodle-note}/.dbpass"
-chmod 600 "\${ENV_DIR:-/etc/doodle-note}/.dbpass" 2>/dev/null || (mkdir -p /etc/doodle-note && echo "\${STORED_PASS}" > /etc/doodle-note/.dbpass && chmod 600 /etc/doodle-note/.dbpass)
+chmod 600 "\${ENV_DIR:-/etc/doodle-note}/.dbpass"
 ok "Postgres-DB \${DB_NAME} / User \${DB_USER} bereit."
 
 log "App-Code synchronisieren (\${UPSTREAM_REPO} @ \${UPSTREAM_BRANCH}) ..."
@@ -423,7 +426,7 @@ KEEP_DB_URL=""
 if [[ -f "\${ENV_FILE}" ]]; then
   KEEP_DB_URL="\$(grep -E '^DATABASE_URL=' "\${ENV_FILE}" | cut -d= -f2- || true)"
 fi
-DBPASS="\$(cat /etc/doodle-note/.dbpass)"
+DBPASS="\$(cat "\${ENV_DIR:-/etc/doodle-note}/.dbpass")"
 if [[ -z "\${KEEP_DB_URL}" ]]; then
   KEEP_DB_URL="postgres://\${DB_USER}:\${DBPASS}@localhost:5432/\${DB_NAME}"
 fi

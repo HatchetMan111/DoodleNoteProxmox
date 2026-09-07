@@ -10,7 +10,7 @@ Upstream-App: <https://github.com/Onyx-Dev-Labs/doodle-note>
 > und laufen **nicht** headless im LXC. Laptops bleiben für Capture zuständig,
 > der LXC optional für Sync/Share.
 
-- Lokal: Next.js + **lokales Postgres 16 im gleichen Container**, keine Cloud nötig.
+- Lokal: Next.js + **lokales Postgres im gleichen Container** (Debian-Standardpaket), keine Cloud nötig.
 - Reboot-sicher: `systemd` (`Restart=always`, `After=network-online.target`)
   + `onboot: 1` für den Container.
 - Idempotent: Erneut laufen lassen = Update (`git pull` + rebuild).
@@ -143,3 +143,19 @@ Env/Build/Doku: `SELF-HOSTING.md`, `apps/web/README.md`, Port `4040`,
 - Container-Logs: `pct exec <CTID> -- journalctl -u doodle-note -n 100 --no-pager`
 - Service: `pct exec <CTID> -- systemctl status doodle-note`
 - HTTP: `pct exec <CTID> -- curl -v http://localhost:4040/`
+
+### Bekannte Meldungen (harmlos, kein Abbruch)
+
+- `could not change directory to "/root": Permission denied` (bei `su postgres`):
+  postgres darf `/root` nicht lesen — die `psql`-Befehle laufen trotzdem.
+- `locale: Cannot set LC_*` / `perl: warning: Setting locale failed`:
+  Container-Locale nicht generiert — kosmetisch, kein Installationsfehler.
+
+### Behoben: `.dbpass`-Abbruch (2026-09-07)
+
+Frühere Version brach ab mit
+`/tmp/doodle-note-inner.sh: line 70: /etc/doodle-note/.dbpass: No such file or directory`.
+Ursache war ein Ordering-Bug: `.dbpass` wurde geschrieben, bevor `/etc/doodle-note`
+per `mkdir -p` angelegt wurde. Gefixt — bei bestehendem Container einfach den
+Einzeiler erneut laufen lassen (Rolle/DB existieren schon, Script ist idempotent:
+`ALTER USER` + `.dbpass` werden neu geschrieben, danach läuft das Setup durch).
