@@ -304,17 +304,44 @@ start_container() {
 }
 
 get_ct_ip() {
-  local ip=""
-  for _ in $(seq 1 30); do
+  local ip="" i
+  log_info "Warte auf Container-IP (max. 90s) ..."
+  for i in $(seq 1 45); do
     ip="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
+    if [[ -z "$ip" ]]; then
+      ip="$(pct exec "$CTID" -- ip -4 -o addr show eth0 2>/dev/null | awk '{print $4}' | cut -d/ -f1 || true)"
+    fi
     if [[ -n "$ip" ]]; then
       echo "$ip"
       return 0
     fi
     sleep 2
   done
-  log_warn "Keine CT-IP via hostname -I ermittelbar (evtl. noch DHCP). Nutze Fallback für BETTER_AUTH_URL."
-  echo ""
+  log_err "Keine Container-IP nach 90s (weder hostname -I noch eth0)."
+  pct config "$CTID" 2>/dev/null | grep -E 'net0' || true
+  return 1
+}
+
+# Die DHCP-IP kann sich während des minutenlangen Builds ändern. Danach die
+# BETTER_AUTH_URL mit der aktuellen IP abgleichen und ggf. reparieren, damit
+# der Login (better-auth Origin-Check) nicht mit 500 scheitert.
+sync_auth_url() {
+  local fresh_ip env_url want_url
+  fresh_ip="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}' || true)"
+  if [[ -n "$fresh_ip" && "$fresh_ip" != "$CT_IP" ]]; then
+    log_warn "CT-IP hat sich während des Setups geändert (${CT_IP} -> ${fresh_ip})."
+    CT_IP="$fresh_ip"
+  fi
+  want_url="http://${CT_IP}:${WEB_PORT}"
+  env_url="$(pct exec "$CTID" -- grep -E '^BETTER_AUTH_URL=' "${ENV_FILE}" 2>/dev/null | cut -d= -f2- || true)"
+  if [[ "$env_url" != "$want_url" ]]; then
+    log_warn "BETTER_AUTH_URL ('${env_url:-leer}') passt nicht zur CT-IP — setze ${want_url} ..."
+    pct exec "$CTID" -- bash -c "sed -i 's|^BETTER_AUTH_URL=.*|BETTER_AUTH_URL=${want_url}|' '${ENV_FILE}' && systemctl restart '${APP_NAME}'"
+    sleep 8
+    log_ok "BETTER_AUTH_URL synchronisiert + Service neugestartet."
+  else
+    log_ok "BETTER_AUTH_URL stimmt mit CT-IP überein (${want_url})."
+  fi
 }
 
 # ============================================================================
@@ -530,14 +557,14 @@ if [[ "$UPDATE_MODE" == "0" ]]; then
   create_container
 fi
 start_container
-CT_IP="$(get_ct_ip || true)"
-if [[ -n "$CT_IP" ]]; then
-  log_info "Container-IP: ${CT_IP}"
-else
-  log_warn "Container-IP unbekannt — BETTER_AUTH_URL nutzt localhost-Fallback."
+if ! CT_IP="$(get_ct_ip)"; then
+  CT_IP=""
 fi
+[[ -n "${CT_IP}" ]] || die "Abbruch: Keine Container-IP ermittelbar. Bridge/DHCP prüfen: pct config ${CTID} | grep net0 ; dann Script erneut laufen lassen (idempotent)."
+log_info "Container-IP: ${CT_IP}"
 
 run_inner_setup "$CT_IP"
+sync_auth_url
 
 log_info "Host-seitige Verifikation ..."
 pct exec "$CTID" -- systemctl is-active "$APP_NAME"
@@ -552,9 +579,14 @@ pct exec "$CTID" -- curl -fsSI "http://localhost:${WEB_PORT}/" 2>&1 | head -n 5
 pct set "$CTID" --onboot 1
 log_ok "onboot=1 gesetzt (CT startet nach Host-Reboot automatisch)."
 
-FINAL_IP="${CT_IP:-<CT-IP>}"
-if [[ "$FINAL_IP" == "<CT-IP>" ]]; then
+FINAL_IP="${CT_IP}"
+if [[ -z "$FINAL_IP" || "$FINAL_IP" == "<CT-IP>" ]]; then
   FINAL_IP="$(pct exec "$CTID" -- hostname -I 2>/dev/null | awk '{print $1}' || echo '<CT-IP>')"
+fi
+
+DHCP_HINWEIS=""
+if [[ "$NET_CFG" == "dhcp" ]]; then
+  DHCP_HINWEIS=" WARNUNG (DHCP): Aendert sich die CT-IP (Reboot/Lease-Ablauf), scheitert der Login mit 500 (BETTER_AUTH_URL veraltet). Abhilfe: statische IP vergeben und Script erneut laufen lassen: pct stop ${CTID} && pct set ${CTID} --net0 name=eth0,bridge=${BRIDGE},ip=<IP>/<MASK>,gw=<GW> && pct start ${CTID}"
 fi
 
 cat <<EOF
@@ -568,6 +600,7 @@ cat <<EOF
  Service   : pct exec ${CTID} -- systemctl status ${APP_NAME}
  Update    : Script erneut laufen lassen (idempotent, --ctid ${CTID})
  Reboot-Test: pct reboot ${CTID} && sleep 15 && pct exec ${CTID} -- systemctl is-active ${APP_NAME}
+${DHCP_HINWEIS}
 ========================================
  Hinweis: Desktop-Capture/Transkription läuft weiterhin nur auf macOS/Windows.
  Dieser LXC stellt den selbstgehosteten Sync-Server (apps/web).
